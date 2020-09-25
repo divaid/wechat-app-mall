@@ -1,31 +1,47 @@
 const app = getApp()
+const CONFIG = require('../../config.js')
+const WXAPI = require('apifm-wxapi')
+const AUTH = require('../../utils/auth')
+const TOOLS = require('../../utils/tools.js')
 
 Page({
 	data: {
-    balance:0,
+    wxlogin: true,
+
+    balance:0.00,
     freeze:0,
     score:0,
-    score_sign_continuous:0
+    growth:0,
+    score_sign_continuous:0,
+    rechargeOpen: false, // 是否开启充值[预存]功能
+
+    // 用户订单统计数据
+    count_id_no_confirm: 0,
+    count_id_no_pay: 0,
+    count_id_no_reputation: 0,
+    count_id_no_transfer: 0,
   },
 	onLoad() {
-    
-	},	
+	},
   onShow() {
-    let that = this;
-    let userInfo = wx.getStorageSync('userInfo')
-    if (!userInfo) {
-      wx.navigateTo({
-        url: "/pages/authorize/index"
+    const _this = this
+    const order_hx_uids = wx.getStorageSync('order_hx_uids')
+    this.setData({
+      version: CONFIG.version,
+      order_hx_uids
+    })
+    AUTH.checkHasLogined().then(isLogined => {
+      this.setData({
+        wxlogin: isLogined
       })
-    } else {
-      that.setData({
-        userInfo: userInfo,
-        version: app.globalData.version
-      })
-    }
-    this.getUserApiInfo();
-    this.getUserAmount();
-    this.checkScoreSign();
+      if (isLogined) {
+        _this.getUserApiInfo();
+        _this.getUserAmount();
+        _this.orderStatistics();
+      }
+    })
+    // 获取购物车数据，显示TabBarBadge
+    TOOLS.showTabBarBadge();
   },
   aboutUs : function () {
     wx.showModal({
@@ -34,128 +50,168 @@ Page({
       showCancel:false
     })
   },
+  loginOut(){
+    AUTH.loginOut()
+    wx.reLaunch({
+      url: '/pages/my/index'
+    })
+  },
   getPhoneNumber: function(e) {
     if (!e.detail.errMsg || e.detail.errMsg != "getPhoneNumber:ok") {
       wx.showModal({
         title: '提示',
-        content: '无法获取手机号码',
+        content: e.detail.errMsg,
         showCancel: false
       })
       return;
     }
-    var that = this;
-    wx.request({
-      url: 'https://api.it120.cc/' + app.globalData.subDomain + '/user/wxapp/bindMobile',
-      data: {
-        token: wx.getStorageSync('token'),
-        encryptedData: e.detail.encryptedData,
-        iv: e.detail.iv
-      },
-      success: function (res) {
-        if (res.data.code == 0) {
-          wx.showToast({
-            title: '绑定成功',
-            icon: 'success',
-            duration: 2000
-          })
-          that.getUserApiInfo();
-        } else {
-          wx.showModal({
-            title: '提示',
-            content: '绑定失败',
-            showCancel: false
-          })
-        }
+    WXAPI.bindMobileWxa(wx.getStorageSync('token'), e.detail.encryptedData, e.detail.iv).then(res => {
+      if (res.code === 10002) {
+        this.setData({
+          wxlogin: false
+        })
+        return
+      }
+      if (res.code == 0) {
+        wx.showToast({
+          title: '绑定成功',
+          icon: 'success',
+          duration: 2000
+        })
+        this.getUserApiInfo();
+      } else {
+        wx.showModal({
+          title: '提示',
+          content: res.msg,
+          showCancel: false
+        })
       }
     })
   },
   getUserApiInfo: function () {
     var that = this;
-    wx.request({
-      url: 'https://api.it120.cc/' + app.globalData.subDomain + '/user/detail',
-      data: {
-        token: wx.getStorageSync('token')
-      },
-      success: function (res) {
-        if (res.data.code == 0) {
-          that.setData({
-            apiUserInfoMap: res.data.data,
-            userMobile: res.data.data.base.mobile
-          });
+    WXAPI.userDetail(wx.getStorageSync('token')).then(function (res) {
+      if (res.code == 0) {
+        let _data = {}
+        _data.apiUserInfoMap = res.data
+        if (res.data.base.mobile) {
+          _data.userMobile = res.data.base.mobile
         }
+        if (that.data.order_hx_uids && that.data.order_hx_uids.indexOf(res.data.base.id) != -1) {
+          _data.canHX = true // 具有扫码核销的权限
+        }
+        const gooking_test = wx.getStorageSync('gooking_test')
+        if (gooking_test && gooking_test == res.data.base.id) {
+          _data.isAdmin = true
+        }
+        that.setData(_data);
       }
     })
-
   },
   getUserAmount: function () {
     var that = this;
-    wx.request({
-      url: 'https://api.it120.cc/' + app.globalData.subDomain + '/user/amount',
-      data: {
-        token: wx.getStorageSync('token')
-      },
-      success: function (res) {
-        if (res.data.code == 0) {
-          that.setData({
-            balance: res.data.data.balance,
-            freeze: res.data.data.freeze,
-            score: res.data.data.score
-          });
-        }
-      }
-    })
-
-  },
-  checkScoreSign: function () {
-    var that = this;
-    wx.request({
-      url: 'https://api.it120.cc/' + app.globalData.subDomain + '/score/today-signed',
-      data: {
-        token: wx.getStorageSync('token')
-      },
-      success: function (res) {
-        if (res.data.code == 0) {
-          that.setData({
-            score_sign_continuous: res.data.data.continuous
-          });
-        }
+    WXAPI.userAmount(wx.getStorageSync('token')).then(function (res) {
+      if (res.code == 0) {
+        that.setData({
+          balance: res.data.balance.toFixed(2),
+          freeze: res.data.freeze.toFixed(2),
+          score: res.data.score,
+          growth: res.data.growth
+        });
       }
     })
   },
-  scoresign: function () {
-    var that = this;
-    wx.request({
-      url: 'https://api.it120.cc/' + app.globalData.subDomain + '/score/sign',
-      data: {
-        token: wx.getStorageSync('token')
-      },
-      success: function (res) {
-        if (res.data.code == 0) {
-          that.getUserAmount();
-          that.checkScoreSign();
-        } else {
-          wx.showModal({
-            title: '错误',
-            content: res.data.msg,
-            showCancel: false
-          })
-        }
+  handleOrderCount: function (count) {
+    return count > 99 ? '99+' : count;
+  },
+  orderStatistics: function () {
+    WXAPI.orderStatistics(wx.getStorageSync('token')).then((res) => {
+      if (res.code == 0) {
+        const {
+          count_id_no_confirm,
+          count_id_no_pay,
+          count_id_no_reputation,
+          count_id_no_transfer,
+        } = res.data || {}
+        this.setData({
+          count_id_no_confirm: this.handleOrderCount(count_id_no_confirm),
+          count_id_no_pay: this.handleOrderCount(count_id_no_pay),
+          count_id_no_reputation: this.handleOrderCount(count_id_no_reputation),
+          count_id_no_transfer: this.handleOrderCount(count_id_no_transfer),
+        })
       }
     })
   },
-  relogin:function(){
+  goAsset: function () {
     wx.navigateTo({
-      url: "/pages/authorize/index"
+      url: "/pages/asset/index"
     })
   },
-  recharge: function () {
+  goScore: function () {
     wx.navigateTo({
-      url: "/pages/recharge/index"
+      url: "/pages/score/index"
     })
   },
-  withdraw: function () {
+  goOrder: function (e) {
     wx.navigateTo({
-      url: "/pages/withdraw/index"
+      url: "/pages/order-list/index?type=" + e.currentTarget.dataset.type
+    })
+  },
+  cancelLogin() {
+    this.setData({
+      wxlogin: true
+    })
+  },
+  goLogin() {
+    this.setData({
+      wxlogin: false
+    })
+  },
+  processLogin(e) {
+    if (!e.detail.userInfo) {
+      wx.showToast({
+        title: '已取消',
+        icon: 'none',
+      })
+      return;
+    }
+    AUTH.register(this);
+  },
+  scanOrderCode(){
+    wx.scanCode({
+      onlyFromCamera: true,
+      success(res) {
+        wx.navigateTo({
+          url: '/pages/order-details/scan-result?hxNumber=' + res.result,
+        })
+      },
+      fail(err) {
+        console.error(err)
+        wx.showToast({
+          title: err.errMsg,
+          icon: 'none'
+        })
+      }
+    })
+  },
+  clearStorage(){
+    wx.clearStorageSync()
+    wx.showToast({
+      title: '已清除',
+      icon: 'success'
+    })
+  },
+  goadmin() {
+    // develop trial release
+    // path 可携带参数
+    // 要打开的小程序版本。仅在当前小程序为开发版或体验版时此参数有效。如果当前小程序是正式版，则打开的小程序必定是正式版。
+    wx.navigateToMiniProgram({
+      appId: 'wx5e5b0066c8d3f33d',
+      path: 'page/index/index',
+      extraData: {
+        token: 'bar123456'
+      },
+      envVersion: 'trial'
     })
   }
 })
